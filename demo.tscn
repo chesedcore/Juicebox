@@ -1,0 +1,18 @@
+[gd_scene load_steps=2 format=3 uid="uid://df7bpd0dj4sug"]
+
+[ext_resource type="Texture2D" uid="uid://te7m7um821bc" path="res://icon.svg" id="1_5hfv0"]
+
+[node name="Demo" type="Node2D"]
+
+[node name="Icon" type="Sprite2D" parent="."]
+position = Vector2(171, 149)
+texture = ExtResource("1_5hfv0")
+
+[node name="RichTextLabel" type="RichTextLabel" parent="."]
+offset_left = 360.0
+offset_top = 125.0
+offset_right = 440.0
+offset_bottom = 165.0
+text = "demo text"
+fit_content = true
+autowrap_mode = 0
