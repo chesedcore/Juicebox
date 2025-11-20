@@ -2,13 +2,15 @@
 ##in and out of view.
 class_name Cascade extends Control
 
-
 ##if this array has [i]any[/i] nodes in it, then instead of this node's direct
 ##children, those nodes are tweened instead. if using a marker2d to denote node
 ##starting position, make sure that marker2d has the same parent as those nodes.
 ##this is because this tool only uses [code]position[/code] in consideration
 ##for tweening and not [code]global_position[/code].
 @export var use_these_nodes_instead: Array[Node]
+
+##does what it says on the tin. these nodes will no longer be part of the animations.
+@export var exclude_these_nodes: Array[Node]
 
 ##what animation type to deploy for this cascade.
 @export var cascade_type: CASCADE_TYPE
@@ -38,9 +40,19 @@ class_name Cascade extends Control
 #@export var tween_alpha: bool ----> ##UNIMPLEMENTED
 ##endregion
 
-signal cascade_started
-signal cascade_finished
-signal last_cascade_started
+enum FADE {
+	
+	##elements fly into the screen.
+	FADE_IN,
+	
+	##elements fly out of the screen.
+	FADE_OUT,
+	
+}
+
+signal cascade_started(fade: FADE)
+signal cascade_finished(fade: FADE)
+signal last_cascade_started(fade: FADE)
 
 ##the dictionary that holds every node while corresponding it to its original
 ##position. intended to act as this tool's single source of truth.
@@ -87,7 +99,7 @@ func prepare_positions_arr() -> void:
 
 func _prepare_children() -> void:
 	for node in get_children():
-		if node is Marker2D: continue
+		if node is Marker2D or node is Timer: continue
 		_original_positions[node] = node.position
 
 func _prepare_targets_instead() -> void:
@@ -96,9 +108,12 @@ func _prepare_targets_instead() -> void:
 
 ##a function that gets all the units that are supposed to take part in animation.
 ##uses [code]_original_positions[/code] as the basis of its truth, so it can be 
-##reliably used immediately after a state change too.
+##reliably used immediately after a state change too. applies the exclusion filter
+##marked in [code]exclude_these_nodes[/code].
 func get_units() -> Array[Node]:
-	return _original_positions.keys()
+	var units := _original_positions.keys()
+	for target in exclude_these_nodes: units.erase(target)
+	return units
 
 ##does what it says on the damned tin. requires a [code]start_marker[/code]
 ##to operate. obviously. uses the marker's [code]position[/code] instead of
@@ -136,11 +151,14 @@ func _cascade_engine(
 	reverse: bool = false
 ) -> void:
 	
-	cascade_started.emit()
+	var fade_status := FADE.FADE_IN
+	if reverse: fade_status = FADE.FADE_OUT
+	
+	cascade_started.emit(fade_status)
 	var units: Array[Node] = filter.call(get_units())
 	if not units:
-		last_cascade_started.emit()
-		cascade_finished.emit()
+		last_cascade_started.emit(fade_status)
+		cascade_finished.emit(fade_status)
 		return
 	
 	if tween: tween.kill()
@@ -153,8 +171,8 @@ func _cascade_engine(
 			modifier.call(tween, unit, cumulative_delay, reverse)
 		cumulative_delay += stagger_time
 	
-	tween.finished.connect(cascade_finished.emit)
-	tween.tween_callback(last_cascade_started.emit)\
+	tween.finished.connect(cascade_finished.emit.bind(fade_status))
+	tween.tween_callback(last_cascade_started.emit.bind(fade_status))\
 	.set_delay(maxf(cumulative_delay - stagger_time, 0.0))
 
 #endregion
@@ -182,6 +200,14 @@ func filter_hitzone(arr: Array[Node]) -> Array[Node]:
 						Vector2(randf_range(-255, 55), randf_range(-55,55))
 		unit.scale = Vector2(0, -2)
 	return arr
+
+##hitzone leaves everything in a haphazard state. this resets them back.
+func hitzone_reset_pos_for_next_in() -> void:
+	for unit in get_children():
+		if unit is Marker2D or unit is Timer: continue
+		var original_pos := _original_positions[unit]
+		unit.position = original_pos
+
 
 ##scatter the units from hitzone into a sine-ordered manner.
 func filter_sine_hitzone(arr: Array[Node]) -> Array[Node]:
@@ -224,8 +250,8 @@ func mod_hitzone_in(t: Tween, node: Node, delay: float, _r: bool) -> void:
 func mod_hitzone_out(t: Tween, node: Node, _delay: float, _rev: bool) -> void:
 	var pos := _original_positions[node]
 	var target_pos := pos + Vector2(sin(pos.x) * 100, randf_range(-30, 30))
-	t.tween_property(node, "position", target_pos, tween_in_time / 2)
-	t.tween_property(node, "scale", Vector2(-2, 0), tween_in_time / 1.5)
+	t.tween_property(node, "position", target_pos, maxf(tween_in_time / 2, 0.5))
+	t.tween_property(node, "scale", Vector2(-2, 0), maxf(tween_in_time / 1.5, 0.5))
 
 #endregion
 
@@ -246,7 +272,7 @@ func _cascade_in_hitzone() -> void:
 	_cascade_engine(filter_hitzone, [mod_hitzone_in])
 
 func _cascade_out_hitzone() -> void:
-	_cascade_engine(filter_nothing, [mod_hitzone_out])
+	_cascade_engine(filter_nothing, [mod_hitzone_out], true)
 
 func _cascade_in_sine_hitzone() -> void:
 	_cascade_engine(filter_sine_hitzone, [mod_hitzone_in])
@@ -262,24 +288,33 @@ func cascade_in() -> void:
 		CASCADE_TYPE.RANDOM:
 			_cascade_in_random()
 		CASCADE_TYPE.HITZONE:
+			hitzone_reset_pos_for_next_in()
 			_cascade_in_hitzone()
 		CASCADE_TYPE.SINE_ORDERED_HITZONE:
 			_cascade_in_sine_hitzone()
 
 ##the public API method intended to block off the entire cascade chain.
 ##the UI elements fly out of view into the ragnarok.
-func cascade_out() -> void:
+##optionally, you can add a flag to ignore excluded nodes,
+##so that every-single-fucking-thing flies out regardless of state.
+func cascade_out(ignore_exclusions: bool = false) -> void:
+	var saved_exclusions := exclude_these_nodes.duplicate()
+	if ignore_exclusions: exclude_these_nodes.clear()
+	
 	match cascade_type:
 		CASCADE_TYPE.ORDERED:
 			_cascade_out_ordered()
 		CASCADE_TYPE.HITZONE, CASCADE_TYPE.SINE_ORDERED_HITZONE:
 			_cascade_out_hitzone()
 		CASCADE_TYPE.RANDOM:
-			_cascade_in_random()
+			_cascade_out_random()
+	
+	if ignore_exclusions: exclude_these_nodes = saved_exclusions
 #endregion
 
 func _ready() -> void:
 	await get_tree().process_frame
 	prepare_positions_arr()
+	await get_tree().process_frame
 	set_start_state()
 	if begin_on_ready: cascade_in()
